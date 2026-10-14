@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# fake b70-doctor --json (VRAM from FAKE_VRAM, default 32 GiB)
+echo "{\"tool\":\"b70-doctor\",\"version\":\"0.2.0\",\"os\":\"Ubuntu 26.04 LTS\",\"kernel\":\"7.0.0-38-generic\",\"ram_gib\":62,\"gpus\":[{\"name\":\"Arc Pro B70\",\"pci_id\":\"8086:e223\",\"addr\":\"0000:03:00.0\",\"driver\":\"xe\",\"bar_bytes\":${FAKE_VRAM:-34359738368},\"link\":\"16.0 GT/s PCIe\",\"link_width\":\"16\",\"card_max_link\":\"32.0 GT/s PCIe\",\"slot_max_link\":\"16.0 GT/s PCIe\",\"guc\":\"70.65.0\",\"huc\":\"8.2.10\",\"dmc\":\"2.6\",\"ccs_job_timeout_ms\":\"5000\",\"sriov_vfs\":\"0\"}],\"packages\":{\"libze-intel-gpu1\":\"26.27.39122.11-0\",\"mesa-vulkan-drivers\":\"26.1.2-1ubuntu1\"},\"swap_devices\":0}"
