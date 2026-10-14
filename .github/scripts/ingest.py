@@ -69,6 +69,8 @@ def parse(body):
         model, test = str(r.get("model_id")), str(r.get("test"))
         if not re.fullmatch(r"(custom:)?[A-Za-z0-9._-]{1,80}", model) or not re.fullmatch(r"(pp|tg)\d{1,6}", test):
             raise Invalid(f"bad model_id/test: {clean(model, 40)!r} {clean(test, 12)!r}")
+        if str(r.get("split_mode", "none")) not in ("none", ""):
+            raise Invalid("runs must use one GPU (split_mode none); multi-GPU results don't belong in the single-card table")
         fa = r.get("flash_attn")
         if fa not in (0, 1, True, False, None):
             raise Invalid("flash_attn must be 0/1")

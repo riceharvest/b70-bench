@@ -11,8 +11,10 @@ Made by [@imdariotoo](https://x.com/imdariotoo). I post my B70 and local-model r
 
 ## Why another benchmark
 
-The llama.cpp [Vulkan scoreboard](https://github.com/ggml-org/llama.cpp/discussions/10879) is great for comparing GPUs,
-but it tests one 7B model at short context on Vulkan only. What B70 owners actually need to know is different:
+llama.cpp has two scoreboards: [Vulkan](https://github.com/ggml-org/llama.cpp/discussions/10879) and Intel's
+[SYCL one](https://github.com/ggml-org/llama.cpp/discussions/23313). Both are great for comparing GPUs. But both test one
+7B model at short context, each on a single backend, and the SYCL one asks for no cross-backend tables. What B70
+owners actually need to know is different:
 
 - **SYCL vs Vulkan on the same machine.** Both are run if you pass both binaries.
 - **Models that use the 32 GB:** a 27B dense model and a 35B MoE, not only 7B.
@@ -21,7 +23,7 @@ but it tests one 7B model at short context on Vulkan only. What B70 owners actua
 - **The environment next to every number:** kernel, GuC firmware, compute-runtime, Mesa, PCIe link, all from
   [b70-doctor](https://github.com/riceharvest/b70-doctor). Regressions and driver wins become visible.
 
-The 7B run uses the scoreboard's exact model and `-fa 0,1`, so those numbers stay comparable with it.
+The 7B run uses the scoreboards' exact model and `-fa 0,1`, so those numbers stay comparable with them.
 
 ## Run it
 
@@ -41,8 +43,14 @@ to open the result issue. That uses `gh` if you're logged in; otherwise it tells
 | `standard` (default) | + Qwen3.8-27B UD-Q4_K_M: pp512 / tg128 at depth 0, 8K, 32K | + 15.3 GB |
 | `full` | + Qwen3.6-35B-A3B UD-Q4_K_M (MoE) at depth 0/8K/32K, and the 27B also at 64K | + 20.6 GB |
 
-Every run is `llama-bench -ngl 99 -p 512 -n 128 -d <depths> -fa <fa> -r 3 -o json`. Raw output, logs and the exact
+Every run is `llama-bench -ngl 99 -sm none -p 512 -n 128 -d <depth> -fa <fa> -r 3 -o jsonl`, one call per depth. It
+always uses one GPU (`-sm none`); pick it with `--dev` / `--mg` on multi-GPU boxes. Raw output, logs and the exact
 commands are kept in `~/b70-bench-results/<time>/`. Models that don't fit your card's VRAM are skipped.
+
+Deep context on Vulkan can be very slow on Xe2, because flash attention falls back to a scalar path
+([#30503](https://github.com/ggml-org/llama.cpp/issues/30503), [#27638](https://github.com/ggml-org/llama.cpp/issues/27638),
+which also reports device loss). Each call has a 40-minute cap (`B70B_TIMEOUT`, in seconds). If a call hits the cap,
+the tests it already finished are kept and the submission marks the call as cut short.
 
 Other options: `--model my.gguf` adds your own model (stored as "custom", kept out of the main tables), `--dev SYCL0`
 picks a GPU, `--reps N`, `--tier none` runs only `--model` files, and `--yes` skips the download question.
@@ -50,8 +58,8 @@ picks a GPU, `--reps N`, `--tier none` runs only `--model` files, and `--yes` sk
 ## What gets submitted
 
 The issue contains your results plus the b70-doctor environment: OS name, kernel, RAM size, GPU model and PCI
-address, PCIe link, BAR size, firmware versions, and Intel/Mesa package versions. No hostname, username, IP or CPU
-serial. You can read and edit `issue-body.md` before posting.
+address, PCIe link, BAR size, firmware versions, and Intel/Mesa package versions. There's no hostname, username, IP or CPU
+serial, and home-directory paths in error lines are shortened to `~`. You can read and edit `issue-body.md` before posting.
 
 A GitHub Action validates the issue (strict types, safe characters only) and adds it to [RESULTS.md](RESULTS.md).
 Edit the issue to fix it; close it as "not planned" to remove it.

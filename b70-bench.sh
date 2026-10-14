@@ -28,13 +28,14 @@ usage: b70-bench.sh [options]
   --out DIR          results directory (default ~/b70-bench-results/<time>)
   --reps N           llama-bench repetitions (default 3)
   --dev DEV          pass -dev DEV to llama-bench (pick a GPU, e.g. SYCL0 or Vulkan0)
+  --mg N             pass -mg N (main GPU index). Runs always use one GPU (-sm none).
   --yes              don't ask before downloading
   --no-submit        don't offer to post the result
 EOF
 }
 
 BINS=(); LABELS=(); CUSTOM=(); TIER=standard; MODELS_DIR=${B70B_MODELS_DIR:-$HOME/.cache/b70-bench/models}
-OUT=""; REPS=3; DEV=""; YES=0; SUBMIT=1
+OUT=""; REPS=3; DEV=""; MG=""; YES=0; SUBMIT=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --sycl) BINS+=("${2:?}"); LABELS+=(SYCL); shift 2 ;;
@@ -46,6 +47,7 @@ while [ $# -gt 0 ]; do
     --out) OUT=${2:?}; shift 2 ;;
     --reps) REPS=${2:?}; shift 2 ;;
     --dev) DEV=${2:?}; shift 2 ;;
+    --mg) MG=${2:?}; shift 2 ;;
     --yes|-y) YES=1; shift ;;
     --no-submit) SUBMIT=0; shift ;;
     --version) echo "b70-bench $VERSION"; exit 0 ;;
@@ -115,6 +117,10 @@ else
   echo '{}' > "$OUT/env.json"; say "environment: b70-doctor unavailable, submitting without it"
 fi
 VRAM=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(max([g.get("bar_bytes",0) for g in d.get("gpus",[])] or [0]))' "$OUT/env.json" 2>/dev/null || echo 0)
+if [ "$VRAM" -gt 0 ] && [ "$VRAM" -lt 1073741824 ]; then
+  say "note: the VRAM BAR is only $(( VRAM / 1048576 )) MiB (Resizable BAR off?), so VRAM size is unknown; running all models. b70-doctor explains the BIOS fix."
+  VRAM=0
+fi
 
 # --- models ------------------------------------------------------------------------------
 fsize() { stat -c %s "$1" 2>/dev/null || echo 0; }
@@ -149,25 +155,35 @@ for c in "${CUSTOM[@]}"; do
 done
 
 # --- run -----------------------------------------------------------------------------------
+# One llama-bench call per depth with jsonl output: a slow or hung deep-context run can't take the others with it,
+# and the lines finished before a timeout are kept.
 TO=${B70B_TIMEOUT:-2400}
+if command -v timeout >/dev/null; then T=(timeout "$TO"); else T=(); fi
 n=0
 for bi in "${!BINS[@]}"; do
   b=${BINS[$bi]}
   for m in "${RUN_MODELS[@]}"; do
     IFS='|' read -r id path depths fa <<< "$m"
-    n=$((n+1)); tag=$(printf '%02d' "$n")
-    args=(-m "$path" -ngl 99 -p 512 -n 128 -d "$depths" -fa "$fa" -r "$REPS" -o json)
-    [ -n "$DEV" ] && args+=(-dev "$DEV")
-    say "[$tag] ${LABELS[$bi]:-llama-bench} $id (depths $depths)"
-    printf '%s\n' "$b ${args[*]}" > "$OUT/run$tag.cmd"
-    printf '{"model_id":"%s","label":"%s"}\n' "$id" "${LABELS[$bi]}" > "$OUT/run$tag.meta"
-    if command -v timeout >/dev/null; then T=(timeout "$TO"); else T=(); fi
-    "${T[@]}" "$b" "${args[@]}" > "$OUT/run$tag.json" 2> "$OUT/run$tag.log"
-    rc=$?
-    if [ "$rc" != 0 ]; then
-      say "    failed (exit $rc): $(grep -v '^\s*$' "$OUT/run$tag.log" | tail -n1 | cut -c1-160)"
-      [ "$rc" = 124 ] && say "    timed out after ${TO}s: check 'sudo dmesg | grep xe' for a GPU hang"
-    fi
+    IFS=',' read -r -a dlist <<< "$depths"
+    for d in "${dlist[@]}"; do
+      n=$((n+1)); tag=$(printf '%02d' "$n")
+      args=(-m "$path" -ngl 99 -sm none -p 512 -n 128 -d "$d" -fa "$fa" -r "$REPS" -o jsonl)
+      [ -n "$DEV" ] && args+=(-dev "$DEV")
+      [ -n "$MG" ] && args+=(-mg "$MG")
+      say "[$tag] ${LABELS[$bi]:-llama-bench} $id depth $d"
+      printf '%s\n' "$b ${args[*]}" > "$OUT/run$tag.cmd"
+      printf '{"model_id":"%s","label":"%s","depth":%d}\n' "$id" "${LABELS[$bi]}" "$d" > "$OUT/run$tag.meta"
+      "${T[@]}" "$b" "${args[@]}" > "$OUT/run$tag.jsonl" 2> "$OUT/run$tag.log"
+      rc=$?
+      if [ "$rc" = 124 ]; then
+        say "    stopped after ${TO}s (kept the finished tests). Slow is as likely as hung: deep context on Vulkan/Xe2 can"
+        say "    take very long. If dmesg shows 'xe ... Timedout job' or 'Engine reset', it was a GPU hang."
+        echo "timeout after ${TO}s" >> "$OUT/run$tag.log"
+      elif [ "$rc" != 0 ]; then
+        say "    failed (exit $rc): $(grep -v '^\s*$' "$OUT/run$tag.log" | tail -n1 | sed "s#$HOME#~#g" | cut -c1-160)"
+      fi
+      printf '%s\n' "$rc" > "$OUT/run$tag.rc"
+    done
   done
 done
 
@@ -176,21 +192,29 @@ python3 - "$OUT" "$VERSION" "$TIER" "$REPO" <<'PY'
 import glob, json, os, sys, datetime
 out, version, tier, repo = sys.argv[1:5]
 env = json.load(open(os.path.join(out, "env.json")))
+home = os.path.expanduser("~")
 runs, failures = [], []
 for cmd in sorted(glob.glob(os.path.join(out, "run*.cmd"))):
     base = cmd[:-4]; meta = json.load(open(base + ".meta"))
-    try:
-        rows = json.load(open(base + ".json"))
-    except Exception:
-        log = open(base + ".log", errors="replace").read().strip().splitlines()
-        failures.append({"model_id": meta["model_id"], "backend": meta["label"] or "?",
-                         "error": (log[-1] if log else "no output")[:200]})
-        continue
+    rows = []
+    for line in open(base + ".jsonl", errors="replace") if os.path.exists(base + ".jsonl") else []:
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            pass  # a line cut off by a timeout
+    rc = open(base + ".rc").read().strip() if os.path.exists(base + ".rc") else "0"
+    if rc != "0" or not rows:
+        log = [l for l in open(base + ".log", errors="replace").read().splitlines() if l.strip()]
+        failures.append({"model_id": meta["model_id"], "depth": meta.get("depth", 0),
+                         "backend": meta["label"] or (rows[0].get("backends") if rows else "") or "?",
+                         "kept_tests": len(rows),
+                         "error": (log[-1] if log else f"exit {rc}, no output").replace(home, "~")[:200]})
     for r in rows:
         test = f"pp{r['n_prompt']}" if r.get("n_prompt") else f"tg{r['n_gen']}"
         runs.append({
             "model_id": meta["model_id"], "backend": meta["label"] or r.get("backends", "?"),
             "backends": r.get("backends", ""), "gpu_info": r.get("gpu_info", ""),
+            "split_mode": r.get("split_mode", ""), "devices": r.get("devices", ""),
             "build_commit": r.get("build_commit", ""), "build_number": r.get("build_number", 0),
             "model_type": r.get("model_type", ""), "test": test, "depth": r.get("n_depth", 0),
             "flash_attn": r.get("flash_attn"), "avg_ts": round(float(r["avg_ts"]), 2),
@@ -220,9 +244,11 @@ pk = env.get("packages", {})
 drv = ", ".join(f"{k} {v}" for k, v in pk.items() if k in ("intel-compute-runtime", "libze-intel-gpu1", "intel-opencl-icd", "mesa-vulkan-drivers", "vulkan-intel"))
 builds = ", ".join(sorted({f"{r['backend']} b{r['build_number']} ({r['build_commit']})" for r in runs}))
 summary = (f"GPU: {g.get('name', '?')} | kernel {env.get('kernel', '?')} | GuC {g.get('guc', '?')} | {drv or 'driver versions unknown'}\n"
-           f"llama.cpp: {builds or '-'}\n\ntokens/s (llama-bench, -ngl 99, Q4 weights, f16 KV):\n\n{table}\n")
+           f"llama.cpp: {builds or '-'}\n\ntokens/s (llama-bench, one GPU (-sm none), -ngl 99, f16 KV):\n\n{table}\n")
 if failures:
-    summary += "\nfailed runs:\n" + "\n".join(f"- {f['backend']} {f['model_id']}: {f['error']}" for f in failures) + "\n"
+    summary += "\nfailed or cut-short runs:\n" + "\n".join(
+        f"- {f['backend']} {f['model_id']} depth {f['depth']}: {f['error']}" + (f" (kept {f['kept_tests']} finished tests)" if f['kept_tests'] else "")
+        for f in failures) + "\n"
 open(os.path.join(out, "summary.md"), "w").write(summary)
 title = f"[result] {g.get('name', 'GPU')} | {' + '.join(backends) or 'no runs'} | {doc['date']}"
 body = (f"<!-- b70-bench-result v1 -->\n{summary}\n<details><summary>raw results (parsed by the bot)</summary>\n\n"

@@ -57,6 +57,7 @@ for name, mut in [
     ("non-intel gpu", lambda x: (x["env"]["gpus"][0].__setitem__("name", "RTX 5090"),
                                  [r.__setitem__("gpu_info", "NVIDIA") for r in x["runs"]])),
     ("too many runs", lambda x: x.__setitem__("runs", x["runs"] * 30)),
+    ("multi-gpu split", lambda x: x["runs"][0].__setitem__("split_mode", "layer")),
 ]:
     x = json.loads(json.dumps(d)); mut(x)
     c = event("opened", 9, body_of(x))

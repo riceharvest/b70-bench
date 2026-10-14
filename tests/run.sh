@@ -18,8 +18,9 @@ for f in llama-2-7b.Q4_0.gguf Qwen3.8-27B-UD-Q4_K_M.gguf Qwen3.6-35B-A3B-UD-Q4_K
 O="$TMP/std"
 FAKE_BACKEND=SYCL bash "$ROOT/b70-bench.sh" --sycl "$FB" --vulkan "$FB" --models-dir "$MD" --out "$O" --no-submit > "$TMP/std.out" 2>&1
 [ $? = 0 ] && ok || { bad std "exit != 0"; cat "$TMP/std.out"; }
-has std "$TMP/std.out" '\[01\] SYCL llama2-7b-q4_0 \(depths 0\)'
-has std "$TMP/std.out" '\[04\] Vulkan qwen3.8-27b-ud-q4_k_m \(depths 0,8192,32768\)'
+has std "$TMP/std.out" '\[01\] SYCL llama2-7b-q4_0 depth 0'
+has std "$TMP/std.out" '\[08\] Vulkan qwen3.8-27b-ud-q4_k_m depth 32768'
+has std "$O/run02.cmd" ' -ngl 99 -sm none -p 512 -n 128 -d 0 -fa 1 -r 3 -o jsonl$'
 has std "$O/summary.md" '\| model \| test \| SYCL \| Vulkan \|'
 has std "$O/summary.md" '\| llama2-7b-q4_0 \| pp512 \(fa off\) \|'
 has std "$O/summary.md" '\| qwen3.8-27b-ud-q4_k_m \| tg128 @ d32768 \| '
@@ -32,7 +33,7 @@ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["schema"]=
 O="$TMP/full"
 bash "$ROOT/b70-bench.sh" --bin "$FB" --tier full --models-dir "$MD" --out "$O" --no-submit > "$TMP/full.out" 2>&1
 has full "$TMP/full.out" 'qwen3.6-35b-a3b-ud-q4_k_m'
-has full "$TMP/full.out" 'depths 0,8192,32768,65536'
+has full "$TMP/full.out" 'qwen3.8-27b-ud-q4_k_m depth 65536'
 O="$TMP/small"
 FAKE_VRAM=17179869184 bash "$ROOT/b70-bench.sh" --bin "$FB" --tier full --models-dir "$MD" --out "$O" --no-submit > "$TMP/small.out" 2>&1
 has small "$TMP/small.out" 'skip qwen3.8-27b-ud-q4_k_m: 15 GiB does not fit this card.s 16 GiB'
@@ -48,9 +49,24 @@ EOF
 chmod +x "$TMP/dead-bench"
 bash "$ROOT/b70-bench.sh" --vulkan "$FB" --sycl "$TMP/dead-bench" --tier quick --models-dir "$MD" --out "$O" --no-submit > "$TMP/fail.out" 2>&1
 has fail "$TMP/fail.out" 'failed \(exit 134\): ggml_sycl: UR_RESULT_ERROR_DEVICE_LOST'
-has fail "$O/summary.md" '- SYCL llama2-7b-q4_0: ggml_sycl: UR_RESULT_ERROR_DEVICE_LOST'
+has fail "$O/summary.md" '- SYCL llama2-7b-q4_0 depth 0: ggml_sycl: UR_RESULT_ERROR_DEVICE_LOST while loading ~/models/x.gguf'
+grep -q "$HOME" "$O/summary.md" "$O/issue-body.md" "$TMP/fail.out" && bad fail "home path leaked" || ok
 has fail "$O/summary.md" '\| model \| test \| SYCL \| Vulkan \|'
 has fail "$O/summary.md" '\| llama2-7b-q4_0 \| tg128 \|  \| [0-9.]+ ± [0-9.]+ \|$'
+
+# 3b. a stalled deep-context run is cut by the timeout; finished tests of it and other depths are kept
+O="$TMP/slow"
+FAKE_SLOW_DEPTH=32768 B70B_TIMEOUT=3 bash "$ROOT/b70-bench.sh" --bin "$FB" --models-dir "$MD" --out "$O" --no-submit > "$TMP/slow.out" 2>&1
+has slow "$TMP/slow.out" 'stopped after 3s \(kept the finished tests\)'
+has slow "$O/summary.md" 'qwen3.8-27b-ud-q4_k_m \| pp512 @ d32768 \| [0-9.]+'
+has slow "$O/summary.md" 'qwen3.8-27b-ud-q4_k_m \| tg128 @ d8192 \| [0-9.]+'
+has slow "$O/summary.md" 'depth 32768: timeout after 3s \(kept 1 finished tests\)'
+
+# 3c. Resizable BAR off: VRAM unknown, nothing skipped
+O="$TMP/rebar"
+FAKE_VRAM=268435456 bash "$ROOT/b70-bench.sh" --bin "$FB" --tier quick --models-dir "$MD" --out "$O" --no-submit > "$TMP/rebar.out" 2>&1
+has rebar "$TMP/rebar.out" 'VRAM BAR is only 256 MiB \(Resizable BAR off\?\)'
+has rebar "$TMP/rebar.out" '\[01\] llama-bench llama2-7b-q4_0 depth 0'
 
 # 4. custom model only; odd filename is sanitized
 O="$TMP/custom"
