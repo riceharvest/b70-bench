@@ -71,6 +71,7 @@ emits real-format JSON (captured from llama.cpp b907), and the ingest bot agains
 
 ## Related
 
+- [Awesome Arc Pro B70](https://github.com/riceharvest/awesome-b70): everything for B70 owners in one place, including known driver bugs with workarounds
 - [b70-doctor](https://github.com/riceharvest/b70-doctor): checks your B70 setup and prints fixes
 - [b70-qwen38-cookbook](https://github.com/riceharvest/b70-qwen38-cookbook): Qwen3.8-27B with 262K context on one B70 (vLLM)
 
