@@ -63,6 +63,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$TIER" in none|quick|standard|full) ;; *) echo "--tier must be none, quick, standard or full" >&2; exit 2 ;; esac
+[ "$TIER" = none ] && [ "${#CUSTOM[@]}" = 0 ] && { echo "--tier none needs at least one --model FILE" >&2; exit 2; }
 command -v python3 >/dev/null || { echo "b70-bench needs python3" >&2; exit 2; }
 
 say() { printf '%s\n' "$*"; }
@@ -198,6 +199,7 @@ for c in "${CUSTOM[@]}"; do
   [ -f "$c" ] || { echo "no such model: $c" >&2; exit 2; }
   RUN_MODELS+=("custom:$(basename "$c" .gguf | tr -c 'A-Za-z0-9._\n-' '-' | cut -c1-70)|$c|0|1")
 done
+[ "${#RUN_MODELS[@]}" -gt 0 ] || { echo "no model fits this card's VRAM; nothing to run" >&2; exit 2; }
 
 # --- run -----------------------------------------------------------------------------------
 # One llama-bench call per depth with jsonl output: a slow or hung deep-context run can't take the others with it,

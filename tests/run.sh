@@ -118,6 +118,12 @@ B70B_BUILDS_DIR="$TMP/builds4" setsid -w bash "$ROOT/b70-bench.sh" --prebuilt --
 [ -z "$(ls -A "$TMP/builds4/b70-test-1" 2>/dev/null)" ] && ok || bad pre4 "files written without consent"
 unset B70B_BUILDS_URL B70B_BUILDS_TAG B70B_BUILDS_DIR
 
+# 5c. nothing to run is an early, clear error
+bash "$ROOT/b70-bench.sh" --bin "$FB" --tier none --out "$TMP/none" --no-submit > "$TMP/none.out" 2>&1
+[ $? = 2 ] && ok || bad none "exit != 2"
+has none "$TMP/none.out" '--tier none needs at least one --model FILE'
+[ ! -e "$TMP/none" ] && ok || bad none "results dir created"
+
 # 6. bench output -> ingest bot -> RESULTS.md (end to end), plus validation cases
 python3 "$HERE/test_ingest.py" "$TMP/std/issue-body.md" > "$TMP/ingest.out" 2>&1 && ok || { bad ingest "test_ingest.py failed"; cat "$TMP/ingest.out"; }
 grep -E '^(OK|FAIL)' "$TMP/ingest.out" | grep -c FAIL | grep -qx 0 && ok || bad ingest "subtests failed"
