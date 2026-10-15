@@ -10,7 +10,7 @@
 # and shows how to submit them. It never posts anything without asking.
 # https://github.com/riceharvest/b70-bench  (MIT)
 set -uo pipefail
-VERSION=0.2.0
+VERSION=0.2.1
 REPO=riceharvest/b70-bench
 DOCTOR_URL=https://raw.githubusercontent.com/riceharvest/b70-doctor/main/b70-doctor.sh
 BUILDS_URL=${B70B_BUILDS_URL:-https://github.com/riceharvest/b70-llama-builds/releases}
@@ -32,7 +32,8 @@ usage: b70-bench.sh [options]
   --models-dir DIR   where standard models are stored (default ~/.cache/b70-bench/models)
   --out DIR          results directory (default ~/b70-bench-results/<time>)
   --reps N           llama-bench repetitions (default 3)
-  --dev DEV          pass -dev DEV to llama-bench (pick a GPU, e.g. SYCL0 or Vulkan0)
+  --dev DEV          pass -dev DEV to llama-bench (pick a GPU, e.g. SYCL0 or Vulkan0). Without --dev/--mg, when a
+                     binary sees more than one GPU, the Battlemage one (else the largest) is picked for it.
   --mg N             pass -mg N (main GPU index). Runs always use one GPU (-sm none).
   --yes              don't ask before downloading
   --no-submit        don't offer to post the result
@@ -206,6 +207,30 @@ done
 # and the lines finished before a timeout are kept.
 TO=${B70B_TIMEOUT:-2400}
 if command -v timeout >/dev/null; then T=(timeout "$TO"); else T=(); fi
+# Pick the GPU per binary unless the user did: with an iGPU present, SYCL's device 0 can be the iGPU.
+pick_dev() { # pick_dev BIN -> prints "NAME|DESCRIPTION|N_DEVICES" or nothing
+  "${T0[@]}" "$1" --list-devices 2>/dev/null | python3 -c '
+import re, sys
+devs = [m.groups() for m in (re.match(r"\s+(\S+): (.*) \((\d+) MiB, \d+ MiB free\)\s*$", l) for l in sys.stdin) if m]
+bmg = re.compile(r"Arc\(TM\) (Pro )?B\d+|Battlemage|\bBMG\b|\bB70\b", re.I)
+if len(devs) > 1:
+    best = max(devs, key=lambda d: (bool(bmg.search(d[1])), int(d[2])))
+    print(f"{best[0]}|{best[1]}|{len(devs)}")'
+}
+if command -v timeout >/dev/null; then T0=(timeout 120); else T0=(); fi
+BDEV=()
+for bi in "${!BINS[@]}"; do
+  BDEV[$bi]=$DEV
+  if [ -z "$DEV" ] && [ -z "$MG" ]; then
+    pick=$(pick_dev "${BINS[$bi]}")
+    if [ -n "$pick" ]; then
+      IFS='|' read -r pname pdesc pn <<< "$pick"
+      BDEV[$bi]=$pname
+      say "${LABELS[$bi]:-llama-bench}: $pn GPUs visible, using $pname ($pdesc); pass --dev to choose another"
+    fi
+  fi
+done
+
 n=0
 for bi in "${!BINS[@]}"; do
   b=${BINS[$bi]}
@@ -215,7 +240,7 @@ for bi in "${!BINS[@]}"; do
     for d in "${dlist[@]}"; do
       n=$((n+1)); tag=$(printf '%02d' "$n")
       args=(-m "$path" -ngl 99 -sm none -p 512 -n 128 -d "$d" -fa "$fa" -r "$REPS" -o jsonl)
-      [ -n "$DEV" ] && args+=(-dev "$DEV")
+      [ -n "${BDEV[$bi]}" ] && args+=(-dev "${BDEV[$bi]}")
       [ -n "$MG" ] && args+=(-mg "$MG")
       say "[$tag] ${LABELS[$bi]:-llama-bench} $id depth $d"
       printf '%s\n' "$b ${args[*]}" > "$OUT/run$tag.cmd"

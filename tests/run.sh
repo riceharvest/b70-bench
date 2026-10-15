@@ -124,6 +124,21 @@ bash "$ROOT/b70-bench.sh" --bin "$FB" --tier none --out "$TMP/none" --no-submit 
 has none "$TMP/none.out" '--tier none needs at least one --model FILE'
 [ ! -e "$TMP/none" ] && ok || bad none "results dir created"
 
+# 5d. GPU pick: B70 over a bigger-memory iGPU; single GPU adds no -dev; --dev wins
+O="$TMP/pick"
+FAKE_DEVICES="SYCL0=Intel(R) Arc(TM) Graphics=47000;SYCL1=Intel(R) Arc(TM) Pro B70 Graphics=31000" \
+  bash "$ROOT/b70-bench.sh" --sycl "$FB" --tier quick --models-dir "$MD" --out "$O" --no-submit > "$TMP/pick.out" 2>&1
+has pick "$TMP/pick.out" 'SYCL: 2 GPUs visible, using SYCL1 \(Intel\(R\) Arc\(TM\) Pro B70 Graphics\)'
+has pick "$O/run01.cmd" ' -o jsonl -dev SYCL1$'
+FAKE_DEVICES="Vulkan0=Intel(R) Graphics (BMG G31)=31000;Vulkan1=AMD Radeon RX 7600=8000" \
+  bash "$ROOT/b70-bench.sh" --vulkan "$FB" --tier quick --models-dir "$MD" --out "$TMP/pick2" --no-submit > "$TMP/pick2.out" 2>&1
+has pick2 "$TMP/pick2/run01.cmd" ' -dev Vulkan0$'
+grep -q -- '-dev' "$TMP/std/run01.cmd" && bad pick "single GPU got -dev" || ok
+FAKE_DEVICES="SYCL0=Intel(R) Arc(TM) Graphics=47000;SYCL1=Intel(R) Arc(TM) Pro B70 Graphics=31000" \
+  bash "$ROOT/b70-bench.sh" --sycl "$FB" --dev SYCL0 --tier quick --models-dir "$MD" --out "$TMP/pick3" --no-submit > "$TMP/pick3.out" 2>&1
+has pick3 "$TMP/pick3/run01.cmd" ' -dev SYCL0$'
+grep -q 'GPUs visible' "$TMP/pick3.out" && bad pick3 "picked despite --dev" || ok
+
 # 6. bench output -> ingest bot -> RESULTS.md (end to end), plus validation cases
 python3 "$HERE/test_ingest.py" "$TMP/std/issue-body.md" > "$TMP/ingest.out" 2>&1 && ok || { bad ingest "test_ingest.py failed"; cat "$TMP/ingest.out"; }
 grep -E '^(OK|FAIL)' "$TMP/ingest.out" | grep -c FAIL | grep -qx 0 && ok || bad ingest "subtests failed"

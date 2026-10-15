@@ -4,6 +4,12 @@ FAKE_BACKEND picks the backend string; FAKE_FAIL=1 fails like a device-lost abor
 FAKE_SLOW_DEPTH=N prints the pp result and then stalls (like a very slow tg) for depths >= N."""
 import json, os, sys, time
 a = sys.argv[1:]
+if "--list-devices" in a:  # FAKE_DEVICES="NAME=DESC=MiB;..." (default: one B70)
+    print("Available devices:")
+    for d in os.environ.get("FAKE_DEVICES", "SYCL0=Intel(R) Arc(TM) Pro B70 Graphics=31000").split(";"):
+        name, desc, mib = d.split("=")
+        print(f"  {name}: {desc} ({mib} MiB, {int(mib) - 100} MiB free)")
+    sys.exit(0)
 def opt(k, d):
     return a[a.index(k) + 1] if k in a else d
 if os.environ.get("FAKE_FAIL") == "1":
