@@ -2,6 +2,7 @@
 # b70-bench: one standard llama.cpp benchmark for Intel Arc Pro B70 / Battlemage owners, with the environment attached,
 # so results from different machines, drivers and backends can be compared in one table.
 #
+#   curl -fsSL https://raw.githubusercontent.com/riceharvest/b70-bench/main/b70-bench.sh | bash -s -- --prebuilt --tier quick
 #   curl -fsSL https://raw.githubusercontent.com/riceharvest/b70-bench/main/b70-bench.sh | bash -s -- --sycl ~/llama.cpp/build-sycl/bin/llama-bench
 #   bash b70-bench.sh --vulkan /path/to/llama-bench --sycl /path/to/llama-bench --tier standard
 #
@@ -9,9 +10,10 @@
 # and shows how to submit them. It never posts anything without asking.
 # https://github.com/riceharvest/b70-bench  (MIT)
 set -uo pipefail
-VERSION=0.1.0
+VERSION=0.2.0
 REPO=riceharvest/b70-bench
 DOCTOR_URL=https://raw.githubusercontent.com/riceharvest/b70-doctor/main/b70-doctor.sh
+BUILDS_URL=${B70B_BUILDS_URL:-https://github.com/riceharvest/b70-llama-builds/releases}
 
 usage() {
   cat <<'EOF'
@@ -19,6 +21,9 @@ usage: b70-bench.sh [options]
   --sycl PATH        llama-bench from a SYCL build        (repeatable as --bin for any backend)
   --vulkan PATH      llama-bench from a Vulkan build
   --bin PATH         llama-bench of any backend (label is read from its output)
+  --prebuilt [B]     download the prebuilt B70 llama.cpp from github.com/riceharvest/b70-llama-builds (latest
+                     release, sha256-checked, cached in ~/.cache/b70-bench/builds). B = sycl, vulkan or
+                     sycl,vulkan [default]. Needs glibc 2.39+ (Ubuntu 24.04+, Fedora 40+, Debian 13+).
   --tier T           quick   = Llama-2-7B Q4_0 (3.6 GB, comparable with the llama.cpp Vulkan scoreboard)
                      standard= quick + Qwen3.8-27B UD-Q4_K_M (15.3 GB)                       [default]
                      full    = standard + Qwen3.6-35B-A3B UD-Q4_K_M (20.6 GB) + 65K-depth decode
@@ -34,13 +39,15 @@ usage: b70-bench.sh [options]
 EOF
 }
 
-BINS=(); LABELS=(); CUSTOM=(); TIER=standard; MODELS_DIR=${B70B_MODELS_DIR:-$HOME/.cache/b70-bench/models}
+BINS=(); LABELS=(); CUSTOM=(); PREBUILT=""; TIER=standard; MODELS_DIR=${B70B_MODELS_DIR:-$HOME/.cache/b70-bench/models}
 OUT=""; REPS=3; DEV=""; MG=""; YES=0; SUBMIT=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --sycl) BINS+=("${2:?}"); LABELS+=(SYCL); shift 2 ;;
     --vulkan) BINS+=("${2:?}"); LABELS+=(Vulkan); shift 2 ;;
     --bin) BINS+=("${2:?}"); LABELS+=(""); shift 2 ;;
+    --prebuilt)
+      case "${2:-}" in sycl|vulkan|sycl,vulkan|vulkan,sycl) PREBUILT=$2; shift 2 ;; *) PREBUILT=sycl,vulkan; shift ;; esac ;;
     --tier) TIER=${2:?}; shift 2 ;;
     --model) CUSTOM+=("${2:?}"); shift 2 ;;
     --models-dir) MODELS_DIR=${2:?}; shift 2 ;;
@@ -70,11 +77,49 @@ ask() { # ask "question" -> 0 for yes. Reads the terminal even when the script i
   case "$a" in y|Y|yes|YES) return 0 ;; esac; return 1
 }
 
+# --- prebuilt llama.cpp (b70-llama-builds) ---------------------------------------------------
+if [ -n "$PREBUILT" ]; then
+  command -v curl >/dev/null || { echo "need curl for --prebuilt" >&2; exit 2; }
+  CACHE=${B70B_BUILDS_DIR:-$HOME/.cache/b70-bench/builds}
+  # The latest release redirects to .../tag/<tag>; download from that tag so tarballs and SHA256SUMS match.
+  TAG=${B70B_BUILDS_TAG:-$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$BUILDS_URL/latest" 2>/dev/null | sed -n 's#.*/tag/##p')}
+  [ -n "$TAG" ] || { echo "could not find the latest release at $BUILDS_URL (offline?)" >&2; exit 2; }
+  case "$TAG" in *[!A-Za-z0-9._-]*) echo "unexpected release tag: $TAG" >&2; exit 2 ;; esac
+  BDIR="$CACHE/$TAG"; mkdir -p "$BDIR" || exit 2
+  want=(); for b in ${PREBUILT//,/ }; do want+=("$b"); done
+  get=(); for b in "${want[@]}"; do [ -x "$BDIR/llama-b70-$b-ubuntu24-x64/llama-bench" ] || get+=("$b"); done
+  if [ "${#get[@]}" -gt 0 ]; then
+    if ! ask "Download prebuilt llama.cpp (${get[*]}, release $TAG; SYCL ~250 MB, Vulkan ~30 MB) from ${BUILDS_URL%/releases}?"; then
+      echo "nothing downloaded; stopping" >&2; exit 1
+    fi
+    curl -fsSL --retry 3 -o "$BDIR/SHA256SUMS" "$BUILDS_URL/download/$TAG/SHA256SUMS" || { echo "download failed: SHA256SUMS" >&2; exit 1; }
+    for b in "${get[@]}"; do
+      f=llama-b70-$b-ubuntu24-x64.tar.gz
+      say "downloading $f"
+      curl -fL --retry 3 -o "$BDIR/$f" "$BUILDS_URL/download/$TAG/$f" || { echo "download failed: $f" >&2; exit 1; }
+      want_sha=$(awk -v f="$f" '$2 == f || $2 == "*" f {print $1}' "$BDIR/SHA256SUMS")
+      got=$(sha256sum "$BDIR/$f" | cut -d' ' -f1)
+      [ -n "$want_sha" ] && [ "$got" = "$want_sha" ] || { rm -f "$BDIR/$f"; echo "sha256 mismatch for $f (got $got, want ${want_sha:-none}); deleted it" >&2; exit 1; }
+      rm -rf "$BDIR/llama-b70-$b-ubuntu24-x64"
+      tar -xzf "$BDIR/$f" -C "$BDIR" --no-same-owner || { echo "could not unpack $f" >&2; exit 1; }
+      rm -f "$BDIR/$f"
+      [ -x "$BDIR/llama-b70-$b-ubuntu24-x64/llama-bench" ] || { echo "$f has no llama-bench" >&2; exit 1; }
+    done
+  fi
+  for b in "${want[@]}"; do
+    BINS+=("$BDIR/llama-b70-$b-ubuntu24-x64/llama-bench")
+    case "$b" in sycl) LABELS+=(SYCL) ;; vulkan) LABELS+=(Vulkan) ;; esac
+  done
+  say "prebuilt llama.cpp: release $TAG in $BDIR"
+fi
+
 if [ "${#BINS[@]}" = 0 ]; then
   if command -v llama-bench >/dev/null; then BINS=("$(command -v llama-bench)"); LABELS=("")
   else
     cat >&2 <<'EOF'
-No llama-bench given. Build llama.cpp for one or both backends, then pass the binaries:
+No llama-bench given. Either use the prebuilt B70 builds (Linux x86-64, glibc 2.39+):
+  bash b70-bench.sh --prebuilt
+or build llama.cpp for one or both backends, then pass the binaries:
   git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
   # Vulkan (needs vulkan headers + glslc):
   cmake -B build-vulkan -DGGML_VULKAN=ON && cmake --build build-vulkan --target llama-bench -j8

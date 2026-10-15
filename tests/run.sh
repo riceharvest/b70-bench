@@ -80,6 +80,44 @@ rc=$?
 [ "$rc" = 1 ] && ok || bad nodl "exit $rc, want 1"
 [ -z "$(ls -A "$TMP/empty")" ] && ok || bad nodl "something was downloaded"
 
+# 5b. --prebuilt: release tarballs from a local fake release; sha256 checked, cached, labels set
+REL="$TMP/rel/download/b70-test-1"; mkdir -p "$REL"
+for b in sycl vulkan; do
+  N=llama-b70-$b-ubuntu24-x64; mkdir -p "$TMP/pkg/$N"; cp "$FB" "$TMP/pkg/$N/llama-bench"
+  tar -czf "$REL/$N.tar.gz" -C "$TMP/pkg" "$N"
+done
+(cd "$REL" && sha256sum *.tar.gz > SHA256SUMS)
+export B70B_BUILDS_URL="file://$TMP/rel" B70B_BUILDS_TAG=b70-test-1 B70B_BUILDS_DIR="$TMP/builds"
+O="$TMP/pre"
+bash "$ROOT/b70-bench.sh" --prebuilt --tier quick --models-dir "$MD" --out "$O" --no-submit --yes > "$TMP/pre.out" 2>&1
+[ $? = 0 ] && ok || { bad pre "exit != 0"; cat "$TMP/pre.out"; }
+has pre "$TMP/pre.out" 'prebuilt llama.cpp: release b70-test-1'
+has pre "$TMP/pre.out" '\[01\] SYCL llama2-7b-q4_0'
+has pre "$TMP/pre.out" '\[02\] Vulkan llama2-7b-q4_0'
+has pre "$O/summary.md" '\| model \| test \| SYCL \| Vulkan \|'
+[ ! -e "$TMP/builds/b70-test-1/llama-b70-sycl-ubuntu24-x64.tar.gz" ] && ok || bad pre "tarball not removed after unpack"
+# cached: second run with only vulkan needs no download and no consent
+rm -rf "$TMP/rel"
+O="$TMP/pre2"
+setsid -w bash "$ROOT/b70-bench.sh" --prebuilt vulkan --tier quick --models-dir "$MD" --out "$O" --no-submit < /dev/null > "$TMP/pre2.out" 2>&1
+[ $? = 0 ] && ok || { bad pre2 "cached run failed"; cat "$TMP/pre2.out"; }
+grep -q 'downloading' "$TMP/pre2.out" && bad pre2 "downloaded again" || ok
+grep -q ' SYCL ' "$TMP/pre2.out" && bad pre2 "ran sycl though only vulkan was asked" || ok
+# a tampered tarball is rejected and deleted
+mkdir -p "$REL"; N=llama-b70-sycl-ubuntu24-x64; tar -czf "$REL/$N.tar.gz" -C "$TMP/pkg" "$N"
+echo "0000000000000000000000000000000000000000000000000000000000000000  $N.tar.gz" > "$REL/SHA256SUMS"
+O="$TMP/pre3"
+B70B_BUILDS_DIR="$TMP/builds3" bash "$ROOT/b70-bench.sh" --prebuilt sycl --tier quick --models-dir "$MD" --out "$O" --no-submit --yes > "$TMP/pre3.out" 2>&1
+[ $? = 1 ] && ok || bad pre3 "tampered tarball did not fail with exit 1"
+has pre3 "$TMP/pre3.out" 'sha256 mismatch for llama-b70-sycl-ubuntu24-x64.tar.gz'
+[ ! -e "$TMP/builds3/b70-test-1/$N" ] && [ ! -e "$TMP/builds3/b70-test-1/$N.tar.gz" ] && ok || bad pre3 "tampered build left behind"
+# no consent without a terminal
+O="$TMP/pre4"
+B70B_BUILDS_DIR="$TMP/builds4" setsid -w bash "$ROOT/b70-bench.sh" --prebuilt --tier quick --models-dir "$MD" --out "$O" --no-submit < /dev/null > "$TMP/pre4.out" 2>&1
+[ $? = 1 ] && ok || bad pre4 "downloaded without consent"
+[ -z "$(ls -A "$TMP/builds4/b70-test-1" 2>/dev/null)" ] && ok || bad pre4 "files written without consent"
+unset B70B_BUILDS_URL B70B_BUILDS_TAG B70B_BUILDS_DIR
+
 # 6. bench output -> ingest bot -> RESULTS.md (end to end), plus validation cases
 python3 "$HERE/test_ingest.py" "$TMP/std/issue-body.md" > "$TMP/ingest.out" 2>&1 && ok || { bad ingest "test_ingest.py failed"; cat "$TMP/ingest.out"; }
 grep -E '^(OK|FAIL)' "$TMP/ingest.out" | grep -c FAIL | grep -qx 0 && ok || bad ingest "subtests failed"

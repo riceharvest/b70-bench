@@ -27,14 +27,23 @@ The 7B run uses the scoreboards' exact model and `-fa 0,1`, so those numbers sta
 
 ## Run it
 
-Build llama.cpp for one or both backends (the script prints the commands if you run it without a binary), then:
+No build needed: `--prebuilt` downloads the SYCL and Vulkan llama.cpp builds from
+[b70-llama-builds](https://github.com/riceharvest/b70-llama-builds) (latest release, sha256-checked, cached in
+`~/.cache/b70-bench/builds`; Linux x86-64 with glibc 2.39+) and benches both:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/riceharvest/b70-bench/main/b70-bench.sh | bash -s -- --prebuilt --tier quick
+```
+
+`--prebuilt sycl` or `--prebuilt vulkan` picks one backend. To bench your own builds instead (the script prints the build
+commands if you run it without a binary):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/riceharvest/b70-bench/main/b70-bench.sh | bash -s -- \
   --sycl ~/llama.cpp/build-sycl/bin/llama-bench --vulkan ~/llama.cpp/build-vulkan/bin/llama-bench
 ```
 
-It asks before downloading models, and again before posting anything. At the end it prints a summary table and offers
+It asks before downloading builds or models, and again before posting anything. At the end it prints a summary table and offers
 to open the result issue. That uses `gh` if you're logged in; otherwise it tells you which file to paste.
 
 | tier | models (pinned Hugging Face revisions, sha256-checked) | download |
