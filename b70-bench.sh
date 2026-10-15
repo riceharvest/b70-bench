@@ -3,6 +3,7 @@
 # so results from different machines, drivers and backends can be compared in one table.
 #
 #   curl -fsSL https://raw.githubusercontent.com/riceharvest/b70-bench/main/b70-bench.sh | bash -s -- --prebuilt --tier quick
+#   curl -fsSL https://raw.githubusercontent.com/riceharvest/b70-bench/main/b70-bench.sh | bash -s -- --docker --tier quick
 #   curl -fsSL https://raw.githubusercontent.com/riceharvest/b70-bench/main/b70-bench.sh | bash -s -- --sycl ~/llama.cpp/build-sycl/bin/llama-bench
 #   bash b70-bench.sh --vulkan /path/to/llama-bench --sycl /path/to/llama-bench --tier standard
 #
@@ -10,7 +11,7 @@
 # and shows how to submit them. It never posts anything without asking.
 # https://github.com/riceharvest/b70-bench  (MIT)
 set -uo pipefail
-VERSION=0.2.1
+VERSION=0.3.0
 REPO=riceharvest/b70-bench
 DOCTOR_URL=https://raw.githubusercontent.com/riceharvest/b70-doctor/main/b70-doctor.sh
 BUILDS_URL=${B70B_BUILDS_URL:-https://github.com/riceharvest/b70-llama-builds/releases}
@@ -24,6 +25,8 @@ usage: b70-bench.sh [options]
   --prebuilt [B]     download the prebuilt B70 llama.cpp from github.com/riceharvest/b70-llama-builds (latest
                      release, sha256-checked, cached in ~/.cache/b70-bench/builds). B = sycl, vulkan or
                      sycl,vulkan [default]. Needs glibc 2.39+ (Ubuntu 24.04+, Fedora 40+, Debian 13+).
+  --docker [B]       same builds, run from the ghcr.io/riceharvest/b70-llama image (any distro with docker or podman;
+                     Vulkan then uses the image's Mesa 26, SYCL its compute-runtime). Can't be mixed with other binaries.
   --tier T           quick   = Llama-2-7B Q4_0 (3.6 GB, comparable with the llama.cpp Vulkan scoreboard)
                      standard= quick + Qwen3.8-27B UD-Q4_K_M (15.3 GB)                       [default]
                      full    = standard + Qwen3.6-35B-A3B UD-Q4_K_M (20.6 GB) + 65K-depth decode
@@ -40,13 +43,15 @@ usage: b70-bench.sh [options]
 EOF
 }
 
-BINS=(); LABELS=(); CUSTOM=(); PREBUILT=""; TIER=standard; MODELS_DIR=${B70B_MODELS_DIR:-$HOME/.cache/b70-bench/models}
+BINS=(); LABELS=(); CUSTOM=(); PREBUILT=""; DOCKER=""; TIER=standard; MODELS_DIR=${B70B_MODELS_DIR:-$HOME/.cache/b70-bench/models}
 OUT=""; REPS=3; DEV=""; MG=""; YES=0; SUBMIT=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --sycl) BINS+=("${2:?}"); LABELS+=(SYCL); shift 2 ;;
     --vulkan) BINS+=("${2:?}"); LABELS+=(Vulkan); shift 2 ;;
     --bin) BINS+=("${2:?}"); LABELS+=(""); shift 2 ;;
+    --docker)
+      case "${2:-}" in sycl|vulkan|sycl,vulkan|vulkan,sycl) DOCKER=$2; shift 2 ;; *) DOCKER=sycl,vulkan; shift ;; esac ;;
     --prebuilt)
       case "${2:-}" in sycl|vulkan|sycl,vulkan|vulkan,sycl) PREBUILT=$2; shift 2 ;; *) PREBUILT=sycl,vulkan; shift ;; esac ;;
     --tier) TIER=${2:?}; shift 2 ;;
@@ -78,6 +83,36 @@ ask() { # ask "question" -> 0 for yes. Reads the terminal even when the script i
   fi
   case "$a" in y|Y|yes|YES) return 0 ;; esac; return 1
 }
+
+# --- llama.cpp from the b70-llama container image --------------------------------------------
+if [ -n "$DOCKER" ]; then
+  { [ -n "$PREBUILT" ] || [ "${#BINS[@]}" -gt 0 ]; } && { echo "--docker can't be combined with --prebuilt/--sycl/--vulkan/--bin" >&2; exit 2; }
+  DK=${B70B_DOCKER:-}
+  [ -z "$DK" ] && for c in docker podman; do command -v "$c" >/dev/null && { DK=$(command -v "$c"); break; }; done
+  [ -n "$DK" ] || { echo "--docker needs docker or podman" >&2; exit 2; }
+  IMAGE=${B70B_IMAGE:-ghcr.io/riceharvest/b70-llama:latest}
+  case "$IMAGE" in *[!A-Za-z0-9./:@_-]*) echo "unexpected image name: $IMAGE" >&2; exit 2 ;; esac
+  if ! "$DK" image inspect "$IMAGE" >/dev/null 2>&1; then
+    ask "Pull $IMAGE (~3 GB: both llama.cpp builds + Mesa 26 + compute-runtime)?" || { echo "nothing pulled; stopping" >&2; exit 1; }
+    "$DK" pull "$IMAGE" || { echo "pull failed: $IMAGE" >&2; exit 1; }
+  fi
+  WR=${B70B_BUILDS_DIR:-$HOME/.cache/b70-bench/builds}/docker; mkdir -p "$WR" || exit 2
+  for b in ${DOCKER//,/ }; do
+    # each llama-bench call runs in a fresh container; the directory of every -m model is mounted read-only at the same path
+    cat > "$WR/llama-bench-$b" <<WRAP
+#!/usr/bin/env bash
+mounts=(); prev=""
+for a in "\$@"; do [ "\$prev" = -m ] && mounts+=(-v "\$(dirname "\$a"):\$(dirname "\$a"):ro"); prev=\$a; done
+exec "$DK" run --rm --network none --device /dev/dri "\${mounts[@]}" --entrypoint /opt/llama/$b/llama-bench "$IMAGE" "\$@"
+WRAP
+    chmod +x "$WR/llama-bench-$b"
+    BINS+=("$WR/llama-bench-$b")
+    case "$b" in sycl) LABELS+=("SYCL (b70-llama image)") ;; vulkan) LABELS+=("Vulkan (b70-llama image)") ;; esac
+  done
+  IMAGE_ID=$("$DK" image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null | cut -c1-19)
+  IMAGE_PKGS=$("$DK" run --rm --network none --entrypoint pacman "$IMAGE" -Q vulkan-intel intel-compute-runtime level-zero-loader 2>/dev/null)
+  say "llama.cpp from $IMAGE ($IMAGE_ID): $(printf '%s' "$IMAGE_PKGS" | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+fi
 
 # --- prebuilt llama.cpp (b70-llama-builds) ---------------------------------------------------
 if [ -n "$PREBUILT" ]; then
@@ -162,6 +197,22 @@ if [ -n "$DOCTOR" ] && bash "$DOCTOR" --json > "$OUT/env.json" 2>/dev/null && py
   say "environment: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); g=(d.get("gpus") or [{}])[0]; print(g.get("name","?"), "| kernel", d.get("kernel","?"), "| GuC", g.get("guc","?"))' "$OUT/env.json")"
 else
   echo '{}' > "$OUT/env.json"; say "environment: b70-doctor unavailable, submitting without it"
+fi
+if [ -n "$DOCKER" ]; then
+  # the GPU userspace is the container's: replace the host's driver versions so the table shows what actually ran
+  python3 - "$OUT/env.json" "$IMAGE" "$IMAGE_ID" "$IMAGE_PKGS" <<'PYDK'
+import json, sys
+p, image, image_id, pkgs = sys.argv[1:5]
+d = json.load(open(p)); pk = d.get("packages") if isinstance(d.get("packages"), dict) else {}
+for k in ("mesa-vulkan-drivers", "vulkan-intel", "intel-compute-runtime", "libze-intel-gpu1", "intel-opencl-icd", "intel-level-zero", "level-zero-loader", "oneapi-level-zero"):
+    pk.pop(k, None)
+for line in pkgs.splitlines():
+    parts = line.split()
+    if len(parts) == 2:
+        pk[parts[0]] = parts[1].split(":")[-1]
+d["packages"] = pk; d["container_image"] = f"{image} {image_id}".strip()
+json.dump(d, open(p, "w"))
+PYDK
 fi
 VRAM=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(max([g.get("bar_bytes",0) for g in d.get("gpus",[])] or [0]))' "$OUT/env.json" 2>/dev/null || echo 0)
 if [ "$VRAM" -gt 0 ] && [ "$VRAM" -lt 1073741824 ]; then

@@ -118,6 +118,34 @@ B70B_BUILDS_DIR="$TMP/builds4" setsid -w bash "$ROOT/b70-bench.sh" --prebuilt --
 [ -z "$(ls -A "$TMP/builds4/b70-test-1" 2>/dev/null)" ] && ok || bad pre4 "files written without consent"
 unset B70B_BUILDS_URL B70B_BUILDS_TAG B70B_BUILDS_DIR
 
+# 5e. --docker: wrappers run llama-bench in the image, mount the model dir, and report the container's driver versions
+export B70B_DOCKER="$HERE/fixtures/fake-docker" B70B_BUILDS_DIR="$TMP/dkbuilds" FAKE_DOCKER_LOG="$TMP/docker.log"
+O="$TMP/dk"
+bash "$ROOT/b70-bench.sh" --docker --tier quick --models-dir "$MD" --out "$O" --no-submit > "$TMP/dk.out" 2>&1
+[ $? = 0 ] && ok || { bad dk "exit != 0"; cat "$TMP/dk.out"; }
+has dk "$TMP/dk.out" 'llama.cpp from ghcr.io/riceharvest/b70-llama:latest \(sha256:0123456789ab\): vulkan-intel 1:26.2.4-1, intel-compute-runtime 26.35'
+has dk "$TMP/dk.out" '\[01\] SYCL \(b70-llama image\) llama2-7b-q4_0'
+has dk "$TMP/dk.out" '\[02\] Vulkan \(b70-llama image\) llama2-7b-q4_0'
+has dk "$O/summary.md" '\| model \| test \| SYCL \(b70-llama image\) \| Vulkan \(b70-llama image\) \|'
+has dk "$O/summary.md" 'GuC 70.65.0 \| vulkan-intel 26.2.4-1, intel-compute-runtime 26.35.39758.10-1$'
+grep -q 'libze-intel-gpu1\|mesa-vulkan-drivers' "$O/summary.md" && bad dk "host driver versions still in summary" || ok
+has dk "$TMP/docker.log" "run --rm --network none --device /dev/dri -v $MD:$MD:ro --entrypoint /opt/llama/vulkan/llama-bench ghcr.io/riceharvest/b70-llama:latest -m $MD/llama-2-7b.Q4_0.gguf"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["env"]["container_image"].startswith("ghcr.io/riceharvest/b70-llama:latest sha256:")' "$O/results.json" && ok || bad dk "container_image in env"
+python3 - "$ROOT/.github/scripts/ingest.py" "$O/issue-body.md" > "$TMP/dk-ingest.out" 2>&1 <<'PYI' && ok || { bad dk "ingest rejects the docker result"; cat "$TMP/dk-ingest.out"; }
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ingest", sys.argv[1]); ing = importlib.util.module_from_spec(spec); spec.loader.exec_module(ing)
+rec = ing.parse(open(sys.argv[2]).read())
+assert {r["backend"] for r in rec["runs"]} == {"SYCL (b70-llama image)", "Vulkan (b70-llama image)"}, rec["runs"][0]["backend"]
+assert ing.driver_for(rec, "Vulkan (b70-llama image)") == "Mesa 26.2.4-1", ing.driver_for(rec, "Vulkan (b70-llama image)")
+assert ing.driver_for(rec, "SYCL (b70-llama image)") == "CR 26.35.39758.10-1"
+PYI
+bash "$ROOT/b70-bench.sh" --docker --prebuilt --tier quick --models-dir "$MD" --out "$TMP/dk2" --no-submit > "$TMP/dk2.out" 2>&1
+[ $? = 2 ] && ok || bad dk2 "--docker + --prebuilt not rejected"
+FAKE_DOCKER_NOIMAGE=1 setsid -w bash "$ROOT/b70-bench.sh" --docker --tier quick --models-dir "$MD" --out "$TMP/dk3" --no-submit < /dev/null > "$TMP/dk3.out" 2>&1
+[ $? = 1 ] && ok || bad dk3 "pulled without consent"
+has dk3 "$TMP/dk3.out" 'Pull ghcr.io/riceharvest/b70-llama:latest \(~3 GB'
+unset B70B_DOCKER B70B_BUILDS_DIR FAKE_DOCKER_LOG
+
 # 5c. nothing to run is an early, clear error
 bash "$ROOT/b70-bench.sh" --bin "$FB" --tier none --out "$TMP/none" --no-submit > "$TMP/none.out" 2>&1
 [ $? = 2 ] && ok || bad none "exit != 2"

@@ -35,7 +35,15 @@ No build needed: `--prebuilt` downloads the SYCL and Vulkan llama.cpp builds fro
 curl -fsSL https://raw.githubusercontent.com/riceharvest/b70-bench/main/b70-bench.sh | bash -s -- --prebuilt --tier quick
 ```
 
-`--prebuilt sycl` or `--prebuilt vulkan` picks one backend. To bench your own builds instead (the script prints the build
+`--prebuilt sycl` or `--prebuilt vulkan` picks one backend. On an older distro (glibc < 2.39), or to get Mesa 26 without
+updating the system, `--docker` runs the same builds from the
+[b70-llama image](https://github.com/riceharvest/b70-llama-builds#docker-image) instead. Vulkan then uses the image's Mesa 26 and
+SYCL its compute-runtime, and the result lists those versions, not the host's:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/riceharvest/b70-bench/main/b70-bench.sh | bash -s -- --docker --tier quick
+```
+ To bench your own builds instead (the script prints the build
 commands if you run it without a binary):
 
 ```bash

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Stand-in for docker/podman in --docker tests. FAKE_DOCKER_LOG gets one line per call; FAKE_DOCKER_NOIMAGE=1: image missing.
+HERE=$(cd "$(dirname "$0")" && pwd)
+[ -n "${FAKE_DOCKER_LOG:-}" ] && printf '%s\n' "$*" >> "$FAKE_DOCKER_LOG"
+case "$1" in
+  image)
+    [ "${FAKE_DOCKER_NOIMAGE:-0}" = 1 ] && [ ! -e "${FAKE_DOCKER_LOG:-/nonexistent}.pulled" ] && exit 1
+    [ "$2" = inspect ] && [ "$3" = --format ] && echo "sha256:0123456789abcdef0123"; exit 0 ;;
+  pull) : > "${FAKE_DOCKER_LOG:-/dev/null}.pulled"; exit 0 ;;
+  run)
+    shift; ep=""; while [ $# -gt 0 ]; do case "$1" in --entrypoint) ep=$2; shift 2 ;; -v|--device|--network) shift 2 ;; --rm) shift ;; *) break ;; esac; done
+    shift  # image
+    case "$ep" in
+      pacman) printf 'vulkan-intel 1:26.2.4-1\nintel-compute-runtime 26.35.39758.10-1\nlevel-zero-loader 1.32.0-1\n' ;;
+      /opt/llama/sycl/llama-bench) FAKE_BACKEND=SYCL exec "$HERE/fake-llama-bench" "$@" ;;
+      /opt/llama/vulkan/llama-bench) FAKE_BACKEND=Vulkan exec "$HERE/fake-llama-bench" "$@" ;;
+      *) echo "fake-docker: unexpected entrypoint $ep" >&2; exit 125 ;;
+    esac ;;
+  *) echo "fake-docker: unexpected $1" >&2; exit 125 ;;
+esac
