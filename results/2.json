@@ -1,0 +1,78 @@
+{
+ "date": "2026-10-15",
+ "version": "0.1.0",
+ "tier": "quick",
+ "gpu": "Arc Pro B70",
+ "kernel": "7.1.8-100.fc43.x8664",
+ "os": "Fedora Linux 43 (KDE Plasma Desktop Edition)",
+ "guc": "70.65.0",
+ "link": "16.0 GT/s PCIe x16",
+ "packages": {
+  "intel-compute-runtime": "26.18.38308.4",
+  "intel-level-zero": "26.18.38308.4",
+  "intel-opencl": "26.18.38308.4",
+  "oneapi-level-zero": "1.28.6",
+  "intel-igc": "2.34.4",
+  "mesa-vulkan-drivers": "25.3.6",
+  "linux-firmware": "20260622"
+ },
+ "runs": [
+  {
+   "model_id": "llama2-7b-q4_0",
+   "test": "pp512",
+   "depth": 0,
+   "flash_attn": 0,
+   "backend": "Vulkan",
+   "build_commit": "097cf33d9",
+   "build_number": 907,
+   "avg_ts": 2643.68,
+   "stddev_ts": 10.62,
+   "type_k": "f16",
+   "type_v": "f16"
+  },
+  {
+   "model_id": "llama2-7b-q4_0",
+   "test": "tg128",
+   "depth": 0,
+   "flash_attn": 0,
+   "backend": "Vulkan",
+   "build_commit": "097cf33d9",
+   "build_number": 907,
+   "avg_ts": 81.04,
+   "stddev_ts": 0.05,
+   "type_k": "f16",
+   "type_v": "f16"
+  },
+  {
+   "model_id": "llama2-7b-q4_0",
+   "test": "pp512",
+   "depth": 0,
+   "flash_attn": 1,
+   "backend": "Vulkan",
+   "build_commit": "097cf33d9",
+   "build_number": 907,
+   "avg_ts": 2580.5,
+   "stddev_ts": 4.3,
+   "type_k": "f16",
+   "type_v": "f16"
+  },
+  {
+   "model_id": "llama2-7b-q4_0",
+   "test": "tg128",
+   "depth": 0,
+   "flash_attn": 1,
+   "backend": "Vulkan",
+   "build_commit": "097cf33d9",
+   "build_number": 907,
+   "avg_ts": 83.37,
+   "stddev_ts": 0.17,
+   "type_k": "f16",
+   "type_v": "f16"
+  }
+ ],
+ "issue": {
+  "number": 2,
+  "author": "riceharvest",
+  "created": "2026-10-15T01:32:42Z"
+ }
+}
